@@ -20,19 +20,52 @@ $duration_hours = function ($match) {
     if (preg_match('/([0-9]+)\s+hour/', $match['duration'] ?? '', $parts)) return (float)$parts[1];
     return 0;
 };
-$booked_hours = array_sum(array_map($duration_hours, $owned_matches));
-$occupancy = count($owned_matches) ? array_sum(array_map(fn($match) => $match['max'] ? $match['joined'] / $match['max'] : 0, $owned_matches)) / count($owned_matches) : 0;
+$active_matches = array_values(array_filter($owned_matches, fn($match) => $match['joined'] > 0));
+$booked_hours = array_sum(array_map($duration_hours, $active_matches));
+$player_bookings = array_sum(array_map(fn($match) => $match['joined'], $active_matches));
+$player_capacity = array_sum(array_map(fn($match) => $match['max'], $active_matches));
+$occupancy = $player_capacity > 0 ? $player_bookings / $player_capacity : 0;
 $estimated_revenue = $booked_hours * (float)($field['price'] ?? 0);
-$player_bookings = array_sum(array_map(fn($match) => $match['joined'], $owned_matches));
-$daily = [
-    'Mon' => ['bookings' => 8, 'matches' => 1, 'hours' => 2, 'revenue' => 40, 'occupancy' => 57, 'rows' => [['name' => 'Monday Kickoff', 'players' => '8/14', 'status' => 'Waiting for Players', 'tone' => 'warn', 'revenue' => 40]]],
-    'Tue' => ['bookings' => 14, 'matches' => 2, 'hours' => 4, 'revenue' => 80, 'occupancy' => 75, 'rows' => [['name' => 'Tuesday 5v5', 'players' => '10/12', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40], ['name' => 'Tuesday Night League', 'players' => '4/14', 'status' => 'Waiting for Players', 'tone' => 'warn', 'revenue' => 40]]],
-    'Wed' => ['bookings' => 11, 'matches' => 1, 'hours' => 2, 'revenue' => 40, 'occupancy' => 79, 'rows' => [['name' => 'Wednesday Social', 'players' => '11/14', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40]]],
-    'Thu' => ['bookings' => 18, 'matches' => 2, 'hours' => 4, 'revenue' => 80, 'occupancy' => 86, 'rows' => [['name' => 'Thursday After Work', 'players' => '12/14', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40], ['name' => 'Thursday 7s', 'players' => '6/14', 'status' => 'Waiting for Players', 'tone' => 'warn', 'revenue' => 40]]],
-    'Fri' => ['bookings' => 24, 'matches' => 2, 'hours' => 4, 'revenue' => 80, 'occupancy' => 86, 'rows' => [['name' => 'Friday Night Football', 'players' => '10/14', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40], ['name' => 'Full House Friday', 'players' => '14/14', 'status' => 'Match Full', 'tone' => 'ok', 'revenue' => 40]]],
-    'Sat' => ['bookings' => 21, 'matches' => 2, 'hours' => 4, 'revenue' => 80, 'occupancy' => 81, 'rows' => [['name' => 'Saturday Morning Kickoff', 'players' => '12/14', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40], ['name' => 'Saturday Sunset Game', 'players' => '9/14', 'status' => 'Waiting for Players', 'tone' => 'warn', 'revenue' => 40]]],
-    'Sun' => ['bookings' => 16, 'matches' => 1, 'hours' => 2, 'revenue' => 40, 'occupancy' => 71, 'rows' => [['name' => 'Sunday League Warm-up', 'players' => '16/22', 'status' => 'Confirmed', 'tone' => 'ok', 'revenue' => 40]]],
-];
+$weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+$daily = [];
+foreach ($weekdays as $weekday) {
+    $daily[$weekday] = [
+        'bookings' => 0,
+        'matches' => 0,
+        'hours' => 0,
+        'revenue' => 0,
+        'occupancy' => 0,
+        'capacity' => 0,
+        'rows' => [],
+    ];
+}
+
+foreach ($active_matches as $match) {
+    $weekday = substr($match['date'], 0, 3);
+    if (!isset($daily[$weekday])) continue;
+
+    $hours = $duration_hours($match);
+    $revenue = $hours * (float)($field['price'] ?? 0);
+    $status = match_status($match['joined'], $match['max'], $match['min']);
+    $daily[$weekday]['bookings'] += $match['joined'];
+    $daily[$weekday]['matches']++;
+    $daily[$weekday]['hours'] += $hours;
+    $daily[$weekday]['revenue'] += $revenue;
+    $daily[$weekday]['capacity'] += $match['max'];
+    $daily[$weekday]['rows'][] = [
+        'name' => $match['name'],
+        'players' => $match['joined'] . '/' . $match['max'],
+        'status' => $status['label'],
+        'tone' => $status['tone'],
+        'revenue' => $revenue,
+    ];
+}
+
+foreach ($daily as &$day) {
+    $day['occupancy'] = $day['capacity'] > 0 ? (int)round($day['bookings'] / $day['capacity'] * 100) : 0;
+    unset($day['capacity']);
+}
+unset($day);
 $weekly = array_map(fn($day) => $day['bookings'], $daily);
 $max_w = max(1, max($weekly));
 
@@ -80,11 +113,11 @@ require 'includes/header.php';
             <?php endforeach; ?>
         </div>
         <div class="admin-daily-summary" style="margin-top:14px;">
-            <div class="section-title" id="daily-title">Select a day to see performance</div>
+            <div class="section-title" id="daily-title"><?= empty($active_matches) ? 'No player activity yet' : 'Select a day to see performance' ?></div>
             <div class="grid-3" style="margin-top:10px;">
-                <div><div class="num" id="daily-bookings">—</div><div class="lbl">Bookings</div></div>
-                <div><div class="num" id="daily-matches">—</div><div class="lbl">Matches</div></div>
-                <div><div class="num" id="daily-hours">—</div><div class="lbl">Hours</div></div>
+                <div><div class="num" id="daily-bookings">0</div><div class="lbl">Bookings</div></div>
+                <div><div class="num" id="daily-matches">0</div><div class="lbl">Matches</div></div>
+                <div><div class="num" id="daily-hours">0.0</div><div class="lbl">Hours</div></div>
             </div>
         </div>
     </div>
@@ -94,7 +127,7 @@ require 'includes/header.php';
         <div class="panel" style="padding:0; overflow:hidden;">
             <table class="admin-table">
                 <thead><tr><th>Match</th><th>Field</th><th>Players</th><th>Status</th><th style="text-align:right;">Revenue</th></tr></thead>
-                <tbody id="matches-body"><tr><td colspan="5" class="dim">Select a day to see its matches.</td></tr></tbody>
+                <tbody id="matches-body"><tr><td colspan="5" class="dim"><?= empty($active_matches) ? 'No matches have players yet.' : 'Select a day to see its matches.' ?></td></tr></tbody>
             </table>
         </div>
     </div>
