@@ -2,6 +2,24 @@
 require 'config.php';
 require 'data.php';
 require 'includes/components.php';
+require 'db.php';
+
+$real_players = (int) db()->query("
+    SELECT COUNT(DISTINCT player_id)
+    FROM match_requests
+    WHERE status = 'approved'
+")->fetchColumn();
+
+$real_matches = (int) db()->query("
+    SELECT COUNT(DISTINCT match_id)
+    FROM match_requests
+    WHERE status = 'approved'
+")->fetchColumn();
+
+$real_fields = (int) db()->query("
+    SELECT COUNT(*)
+    FROM fields
+")->fetchColumn();
 
 if (empty($_SESSION['user'])) {
     header('Location: login.php?mode=signup');
@@ -29,9 +47,9 @@ $today = array_filter($matches, fn($m) => $m['date'] === 'Fri, Aug 28');
 
 <div style="padding: 0 20px;">
     <div class="stat-grid">
-        <div class="stat-box"><div class="num">1,200+</div><div class="lbl">Players</div></div>
-        <div class="stat-box"><div class="num">85+</div><div class="lbl">Matches</div></div>
-        <div class="stat-box"><div class="num">12</div><div class="lbl">Fields</div></div>
+        <div class="stat-box"><div class="num"><?= number_format($real_players) ?></div><div class="lbl">Players Joined</div></div>
+        <div class="stat-box"><div class="num"><?= number_format($real_matches) ?></div><div class="lbl">Matches With Players</div></div>
+        <div class="stat-box"><div class="num"><?= number_format($real_fields) ?></div><div class="lbl">Fields</div></div>
     </div>
 </div>
 

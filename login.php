@@ -19,25 +19,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Enter a valid email address.';
     } elseif ($action === 'signup') {
         $name = trim((string)($_POST['name'] ?? ''));
-        $existing = array_filter($_SESSION['users'], fn($user) => $user['email'] === $email);
 
         if ($name === '' || strlen($name) < 2) {
             $error = 'Enter your name.';
         } elseif (strlen($password) < 6) {
             $error = 'Your password must be at least 6 characters.';
-        } elseif (!empty($existing)) {
-            $error = 'An account with that email already exists.';
         } else {
-            $_SESSION['users'][] = [
-                'email' => $email,
-                'name' => $name,
-                'password' => password_hash($password, PASSWORD_DEFAULT),
-                'role' => 'user',
-            ];
-            $_SESSION['user'] = ['email' => $email, 'name' => $name, 'role' => 'user'];
-            $_SESSION['flash'] = 'Your account is ready. Welcome to Leng Ball!';
-            header('Location: index.php');
-            exit;
+            try {
+                $pdo = db();
+                $pdo->beginTransaction();
+                $password_hash = password_hash($password, PASSWORD_DEFAULT);
+                $stmt = $pdo->prepare(
+                    "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'player')"
+                );
+                $stmt->execute([$name, $email, $password_hash]);
+                $user_id = (int)$pdo->lastInsertId();
+
+                $profile = $pdo->prepare('INSERT INTO player_profiles (user_id, full_name) VALUES (?, ?)');
+                $profile->execute([$user_id, $name]);
+                $pdo->commit();
+
+                $_SESSION['users'][] = [
+                    'email' => $email,
+                    'name' => $name,
+                    'password' => $password_hash,
+                    'role' => 'player',
+                ];
+                $_SESSION['user'] = [
+                    'id' => $user_id,
+                    'email' => $email,
+                    'name' => $name,
+                    'role' => 'player',
+                ];
+                $_SESSION['flash'] = 'Your account is ready. Welcome to Leng Ball!';
+                header('Location: index.php');
+                exit;
+            } catch (PDOException $exception) {
+                if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
+                $error = $exception->getCode() === '23000'
+                    ? 'An account with that email already exists.'
+                    : 'Unable to create your account right now.';
+            }
         }
     } else {
         $authenticated = false;
@@ -80,6 +102,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $authenticated = true;
                     break;
                 }
+            }
+        } else {
+            try {
+                $stmt = db()->prepare(
+                    "SELECT id, name, email, password_hash FROM users WHERE email = ? AND role = 'player' LIMIT 1"
+                );
+                $stmt->execute([$email]);
+                $db_user = $stmt->fetch();
+
+                if ($db_user && password_verify($password, $db_user['password_hash'])) {
+                    $_SESSION['user'] = [
+                        'id' => (int)$db_user['id'],
+                        'email' => $db_user['email'],
+                        'name' => $db_user['name'],
+                        'role' => 'player',
+                    ];
+                    $authenticated = true;
+                }
+            } catch (PDOException $exception) {
+                // Keep the session demo account available when the database is offline.
             }
         }
 

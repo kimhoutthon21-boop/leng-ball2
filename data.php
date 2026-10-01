@@ -53,27 +53,101 @@ function match_status($joined, $max, $min) {
     return ['label' => 'Waiting for Players', 'tone' => 'warn'];
 }
 
-// The full match list: base demo matches (with the session's join deltas
-// applied) plus any matches the demo user has created this session.
+function ensure_database_match($match, $is_created = false) {
+    require_once __DIR__ . '/db.php';
+
+    static $match_ids = [];
+    $title = $match['name'];
+    if (isset($match_ids[$title])) return $match_ids[$title];
+
+    $stmt = db()->prepare('SELECT id FROM matches WHERE title = ? ORDER BY id LIMIT 1');
+    $stmt->execute([$title]);
+    $database_id = $stmt->fetchColumn();
+    if ($database_id) {
+        return $match_ids[$title] = (int)$database_id;
+    }
+
+    $owner_id = $is_created ? ($_SESSION['user']['id'] ?? null) : null;
+    if (!$owner_id) {
+        $owner_id = db()->query("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1")->fetchColumn();
+    }
+    if (!$owner_id) return null;
+
+    $field_stmt = db()->prepare('SELECT id FROM fields WHERE name = ? LIMIT 1');
+    $field_stmt->execute([$match['field']]);
+    $field_id = $field_stmt->fetchColumn() ?: null;
+
+    $date_value = preg_replace('/^[A-Za-z]{3},\\s*/', '', $match['date']);
+    $date = DateTime::createFromFormat('!M j Y', $date_value . ' ' . date('Y'));
+    $time_value = explode(' – ', $match['time'])[0];
+    $time = DateTime::createFromFormat('!g:i A', $time_value);
+    if (!$date || !$time) return null;
+
+    $formation_stmt = db()->prepare('SELECT id FROM formations WHERE format = ? ORDER BY id LIMIT 1');
+    $formation_stmt->execute([$match['format']]);
+    $formation_id = $formation_stmt->fetchColumn() ?: null;
+
+    $insert = db()->prepare(
+        "INSERT INTO matches (admin_id, field_id, title, match_date, match_time, location, match_fee, max_players, min_players, skill_level, format, formation_id, status, about, image_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)"
+    );
+    $insert->execute([
+        $owner_id,
+        $field_id,
+        $title,
+        $date->format('Y-m-d'),
+        $time->format('H:i:s'),
+        $match['field'],
+        $match['price'],
+        $match['max'],
+        $match['min'],
+        $match['skill'],
+        $match['format'],
+        $formation_id,
+        $match['about'],
+        $match['img'],
+    ]);
+
+    return $match_ids[$title] = (int)db()->lastInsertId();
+}
+
+function match_participants($database_match_id) {
+    if (!$database_match_id) return [];
+
+    require_once __DIR__ . '/db.php';
+    $stmt = db()->prepare(
+        "SELECT users.id, users.name
+         FROM match_requests
+         JOIN users ON users.id = match_requests.player_id
+         WHERE match_requests.match_id = ? AND match_requests.status = 'approved'
+         ORDER BY match_requests.created_at"
+    );
+    $stmt->execute([$database_match_id]);
+    return $stmt->fetchAll();
+}
+
+// Match counts and participant names come from persisted approved requests.
 function all_matches() {
     $out = [];
 
     foreach (get_base_matches() as $m) {
-        $extra = isset($_SESSION['extra'][$m['id']]) ? $_SESSION['extra'][$m['id']] : 0;
-        $joined = min($m['max'], $m['base_joined'] + $extra);
-        $m['joined'] = $joined;
-        $m['players'] = players_for(min($joined, 12), crc32($m['id']));
-        $m['joined_by_me'] = in_array($m['id'], $_SESSION['joined']);
+        $m['db_id'] = ensure_database_match($m);
+        $participants = match_participants($m['db_id']);
+        $m['joined'] = count($participants);
+        $m['players'] = array_column($participants, 'name');
+        $participant_ids = array_map('intval', array_column($participants, 'id'));
+        $m['joined_by_me'] = in_array((int)($_SESSION['user']['id'] ?? 0), $participant_ids, true);
         $m['is_created'] = false;
         $out[] = $m;
     }
 
     foreach ($_SESSION['created'] as $m) {
-        $extra = isset($_SESSION['extra'][$m['id']]) ? $_SESSION['extra'][$m['id']] : 0;
-        $joined = min($m['max'], $extra);
-        $m['joined'] = $joined;
-        $m['players'] = players_for(min($joined, 12), crc32($m['id']));
-        $m['joined_by_me'] = in_array($m['id'], $_SESSION['joined']);
+        $m['db_id'] = ensure_database_match($m, true);
+        $participants = match_participants($m['db_id']);
+        $m['joined'] = count($participants);
+        $m['players'] = array_column($participants, 'name');
+        $participant_ids = array_map('intval', array_column($participants, 'id'));
+        $m['joined_by_me'] = in_array((int)($_SESSION['user']['id'] ?? 0), $participant_ids, true);
         $m['is_created'] = true;
         $out[] = $m;
     }
